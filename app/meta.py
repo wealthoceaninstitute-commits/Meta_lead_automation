@@ -12,6 +12,7 @@ _NAME_CACHE: dict = {}
 
 
 def _clean_meta_value(value):
+    """Strip Meta CSV prefixes: l: ag: as: c: f: p:"""
     text = str(value or "").strip()
     for prefix in ("l:", "ag:", "as:", "c:", "f:", "p:"):
         if text.startswith(prefix):
@@ -115,6 +116,10 @@ def graph_get(object_id: str, fields: str, timeout: int = 25):
 
 
 def fetch_lead_details(lead_id: str):
+    """
+    Fetch lead from Graph API.
+    adset_id / campaign_id are NOT valid leadgen fields — must come from webhook or ad object.
+    """
     safe_fields = "id,created_time,field_data,ad_id,form_id,is_organic,platform"
     return graph_get(lead_id, safe_fields, timeout=30)
 
@@ -126,14 +131,13 @@ def fetch_optional_object(object_id: str, fields: str):
 
     cache_key = f"{object_id}:{fields}"
     if cache_key in _NAME_CACHE:
-        print(f"[CACHE] Hit for {object_id}", flush=True)
         return _NAME_CACHE[cache_key]
 
     data = graph_get(object_id, fields, timeout=15)
     if data.get("fetch_error"):
         err_code = (data.get("error") or {}).get("code")
         if err_code == 4:
-            print(f"[WARN] Rate limit hit for {object_id} — will retry on next lead", flush=True)
+            print(f"[WARN] Rate limit hit for {object_id}", flush=True)
         else:
             print(f"Optional Meta object fetch failed for {object_id}: {data}", flush=True)
         return {}
@@ -142,17 +146,54 @@ def fetch_optional_object(object_id: str, fields: str):
     return data
 
 
+def _extract_names_from_field_data(field_data: list) -> dict:
+    """
+    The Meta CSV export proves that ad_name, adset_name, campaign_name, form_name
+    are sometimes embedded directly in the lead's field_data as columns.
+    Extract them if present.
+    """
+    result = {}
+    name_map = {
+        "ad_name": ["ad_name", "ad name"],
+        "adset_name": ["adset_name", "adset name", "ad set name"],
+        "campaign_name": ["campaign_name", "campaign name"],
+        "form_name": ["form_name", "form name"],
+    }
+    for f in field_data or []:
+        fname = str(f.get("name", "")).strip().lower().replace(" ", "_")
+        vals = f.get("values") or []
+        val = vals[0] if vals else ""
+        for key, variants in name_map.items():
+            if fname in variants and val:
+                result[key] = val
+    return result
+
+
 def enrich_ad_form_metadata(data: dict, webhook_value: dict | None = None):
+    """
+    Resolve ad/adset/campaign/form IDs and names.
+
+    Priority order for names:
+    1. Directly in webhook_value (some integrations send them)
+    2. Extracted from field_data (Meta CSV columns embedded in lead)
+    3. Graph API lookup (requires ads_read permission on token)
+    4. Fallback to raw ID
+    """
     webhook_value = webhook_value or {}
 
-    webhook_adgroup = _clean_meta_value(webhook_value.get("adgroup_id") or "")
-    webhook_ad_id   = _clean_meta_value(webhook_value.get("ad_id") or "")
+    # ── Extract and clean all IDs ─────────────────────────────────────────
+    # webhook sends adgroup_id = the ad ID (ag: prefix)
+    raw_ad_id      = webhook_value.get("adgroup_id") or webhook_value.get("ad_id") or data.get("ad_id") or ""
+    raw_adset_id   = webhook_value.get("adset_id") or ""
+    raw_campaign_id= webhook_value.get("campaign_id") or ""
+    raw_form_id    = data.get("form_id") or webhook_value.get("form_id") or ""
 
-    data["ad_id"]       = _clean_meta_value(data.get("ad_id") or webhook_ad_id or "")
-    data["form_id"]     = _clean_meta_value(data.get("form_id") or webhook_value.get("form_id") or "")
-    data["adset_id"]    = _clean_meta_value(data.get("adset_id") or webhook_value.get("adset_id") or webhook_adgroup or "")
-    data["campaign_id"] = _clean_meta_value(data.get("campaign_id") or webhook_value.get("campaign_id") or "")
+    data["ad_id"]       = _clean_meta_value(raw_ad_id)
+    data["adset_id"]    = _clean_meta_value(raw_adset_id)
+    data["campaign_id"] = _clean_meta_value(raw_campaign_id)
+    data["form_id"]     = _clean_meta_value(raw_form_id)
 
+    # ── Platform ──────────────────────────────────────────────────────────
     source = (
         data.get("platform") or data.get("source")
         or webhook_value.get("platform") or webhook_value.get("source")
@@ -160,40 +201,63 @@ def enrich_ad_form_metadata(data: dict, webhook_value: dict | None = None):
     )
     data["platform"] = normalize_source(source)
 
-    if data.get("form_id"):
+    # ── Names: step 1 — check webhook_value directly ─────────────────────
+    data["ad_name"]       = data.get("ad_name") or webhook_value.get("ad_name", "")
+    data["adset_name"]    = data.get("adset_name") or webhook_value.get("adset_name", "")
+    data["campaign_name"] = data.get("campaign_name") or webhook_value.get("campaign_name", "")
+    data["form_name"]     = data.get("form_name") or webhook_value.get("form_name", "")
+
+    # ── Names: step 2 — extract from field_data if embedded ──────────────
+    embedded = _extract_names_from_field_data(data.get("field_data", []))
+    for k in ("ad_name", "adset_name", "campaign_name", "form_name"):
+        if not data.get(k) and embedded.get(k):
+            data[k] = embedded[k]
+
+    # ── Names: step 3 — Graph API lookups (needs ads_read permission) ─────
+    # Form name
+    if not data.get("form_name") and data.get("form_id"):
         form = fetch_optional_object(data["form_id"], "id,name")
-        data["form_name"] = data.get("form_name") or form.get("name", "")
+        data["form_name"] = form.get("name", "")
 
-    if data.get("ad_id") and data["ad_id"] != data.get("adset_id"):
-        ad = fetch_optional_object(data["ad_id"], "id,name,adset_id,campaign_id")
-        if ad:
-            data["ad_name"]     = data.get("ad_name") or ad.get("name", "")
-            data["adset_id"]    = _clean_meta_value(data.get("adset_id") or ad.get("adset_id", ""))
-            data["campaign_id"] = _clean_meta_value(data.get("campaign_id") or ad.get("campaign_id", ""))
-        else:
-            print(f"[INFO] ad_id={data['ad_id']} fetch failed — trying as adset_id", flush=True)
-            if not data.get("adset_id"):
-                data["adset_id"] = data["ad_id"]
+    # Ad → adset → campaign chain
+    if data.get("ad_id"):
+        if not data.get("ad_name") or not data.get("adset_id") or not data.get("campaign_id"):
+            ad = fetch_optional_object(data["ad_id"], "id,name,adset_id,campaign_id")
+            if ad:
+                data["ad_name"]     = data.get("ad_name") or ad.get("name", "")
+                data["adset_id"]    = data.get("adset_id") or _clean_meta_value(ad.get("adset_id", ""))
+                data["campaign_id"] = data.get("campaign_id") or _clean_meta_value(ad.get("campaign_id", ""))
+            else:
+                # ad_id might actually be an adset_id (common with lead ads)
+                if not data.get("adset_id"):
+                    data["adset_id"] = data["ad_id"]
 
-    if data.get("adset_id"):
+    if data.get("adset_id") and (not data.get("adset_name") or not data.get("campaign_id")):
         adset = fetch_optional_object(data["adset_id"], "id,name,campaign_id")
         if adset:
             data["adset_name"]  = data.get("adset_name") or adset.get("name", "")
-            data["campaign_id"] = _clean_meta_value(data.get("campaign_id") or adset.get("campaign_id", ""))
+            data["campaign_id"] = data.get("campaign_id") or _clean_meta_value(adset.get("campaign_id", ""))
 
-    if data.get("campaign_id"):
+    if data.get("campaign_id") and not data.get("campaign_name"):
         campaign = fetch_optional_object(data["campaign_id"], "id,name")
         if campaign:
-            data["campaign_name"] = data.get("campaign_name") or campaign.get("name", "")
+            data["campaign_name"] = campaign.get("name", "")
 
+    # ── Names: step 4 — fallback chain ───────────────────────────────────
     if not data.get("campaign_name"):
         fallback = data.get("adset_name") or data.get("ad_name") or data.get("form_name")
         if fallback:
             data["campaign_name"] = fallback
-            print(f"[INFO] Using fallback for campaign_name: {fallback!r}", flush=True)
+            print(f"[INFO] campaign_name fallback: {fallback!r}", flush=True)
+        elif data.get("campaign_id"):
+            data["campaign_name"] = f"Campaign {data['campaign_id']}"
         elif data.get("adset_id"):
             data["campaign_name"] = f"Ad Set {data['adset_id']}"
-            print(f"[INFO] No names resolved — using raw adset_id: {data['adset_id']}", flush=True)
+
+    print(f"[META] ids: ad={data.get('ad_id')} adset={data.get('adset_id')} "
+          f"campaign={data.get('campaign_id')} form={data.get('form_id')}", flush=True)
+    print(f"[META] names: ad={data.get('ad_name')!r} adset={data.get('adset_name')!r} "
+          f"campaign={data.get('campaign_name')!r} form={data.get('form_name')!r}", flush=True)
 
     return data
 
@@ -203,30 +267,26 @@ def parse_lead_fields(data: dict) -> dict:
     Extract all lead fields from the merged Meta payload.
     Handles any form field naming convention including long descriptive names
     like 'seminars_happen_sunday_from_10:30_am_to_12:30_pm'.
-    Returns a clean dict ready to write to the Lead model.
+    Also handles Meta CSV prefixes on phone: p:+918095900526
     """
     fields = field_map_from_meta(data)
     merged = {**data, **fields}
 
-    # --- Name ---
     name = get_lead_field(merged,
         "full_name", "full name", "name", "your_name", "your name",
         "customer_name", "first_name", "first name", "contact_name")
 
-    # --- Phone ---
     raw_phone = get_lead_field(merged,
         "phone", "phone_number", "phone number", "mobile", "mobile_number",
         "mobile number", "whatsapp_number", "whatsapp number",
         "your_phone_number", "your mobile number", "contact_number")
+    # Strip p: prefix if present (Meta CSV format)
+    raw_phone = _clean_meta_value(raw_phone)
     phone = clean_phone(raw_phone)
 
-    # --- Email ---
     email = get_lead_field(merged, "email", "email_address", "email address")
+    city  = get_lead_field(merged, "city", "location", "place", "your_city")
 
-    # --- City ---
-    city = get_lead_field(merged, "city", "location", "place", "your_city")
-
-    # --- Experience ---
     experience = get_lead_field(merged,
         "what_is_your_experience_level_in_stock_market?",
         "what_is_your_current_experience_level?",
@@ -234,8 +294,7 @@ def parse_lead_fields(data: dict) -> dict:
         "experience", "experience_level", "current experience level",
         "stock_market_experience", "your_experience")
 
-    # --- Preferred Day ---
-    # Try explicit day field first, then fall back to scanning all keys/values
+    # Preferred day — try explicit field first
     preferred_day = get_lead_field(merged,
         "please_choose_a_day_for_the_free_seminar",
         "please choose a day for the free seminar",
@@ -244,15 +303,21 @@ def parse_lead_fields(data: dict) -> dict:
         "seminar_day", "seminar day", "preferred_day", "preferred day",
         "choose_day", "day", "session")
 
-    # If still empty, detect from field names/values (e.g. 'seminars_happen_sunday_from_10:30...')
-    if not preferred_day:
-        preferred_day = detect_preferred_day(merged)
+    # If value doesn't clearly say Sunday/Thursday, detect from field NAMES
+    # e.g. field 'seminars_happen_sunday_from_10:30_am_to_12:30_pm' = 'yes,_i'll_attend'
+    if not preferred_day or (
+        "sunday" not in preferred_day.lower() and
+        "thursday" not in preferred_day.lower()
+    ):
+        detected = detect_preferred_day(merged)
+        if detected:
+            preferred_day = detected
 
     seminar = get_seminar_details(preferred_day, merged)
 
     print(f"[PARSE] name={name!r} phone={phone!r} email={email!r} "
           f"city={city!r} experience={experience!r} preferred_day={preferred_day!r} "
-          f"seminar={seminar}", flush=True)
+          f"seminar_day={seminar.get('seminar_day')!r}", flush=True)
 
     return {
         "full_name": name,
@@ -270,7 +335,6 @@ def upsert_lead_from_meta(db: Session, lead_id: str, raw: dict | None = None,
     print("Processing leadgen id:", lead_id, flush=True)
     data = raw or fetch_lead_details(lead_id)
     data = enrich_ad_form_metadata(data, webhook_value=webhook_value)
-
     parsed = parse_lead_fields(data)
 
     lead = db.query(Lead).filter(Lead.meta_lead_id == str(lead_id)).first()
@@ -288,14 +352,12 @@ def upsert_lead_from_meta(db: Session, lead_id: str, raw: dict | None = None,
     lead.preferred_day = parsed["preferred_day"] or lead.preferred_day
     lead.status        = lead.status or "New"
 
-    # Seminar details
     lead.seminar_day  = parsed["seminar_day"] or lead.seminar_day
     lead.seminar_date = parsed["seminar_date"] or lead.seminar_date
     lead.seminar_time = parsed["seminar_time"] or lead.seminar_time
     lead.arrival_time = parsed["arrival_time"] or lead.arrival_time
     lead.venue        = parsed["venue"] or lead.venue
 
-    # Ad/campaign metadata
     for k in ["campaign_id", "campaign_name", "adset_id", "adset_name",
               "ad_id", "ad_name", "form_id", "form_name", "platform", "is_organic"]:
         value = data.get(k)
@@ -311,11 +373,9 @@ def upsert_lead_from_meta(db: Session, lead_id: str, raw: dict | None = None,
     db.refresh(lead)
 
     print("Lead saved:", {
-        "id": lead.id, "meta_lead_id": lead.meta_lead_id,
-        "name": lead.full_name, "phone": lead.phone,
+        "id": lead.id, "name": lead.full_name, "phone": lead.phone,
         "campaign": lead.campaign_name, "seminar_day": lead.seminar_day,
         "created": created,
-        "fetch_error": (lead.raw or {}).get("fetch_error"),
     }, flush=True)
 
     wa = None
