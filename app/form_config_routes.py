@@ -73,11 +73,11 @@ def list_form_configs(db: Session = Depends(get_db), user: str = Depends(require
 
 @router.post("/cleanup-unused")
 def cleanup_unused(db: Session = Depends(get_db), user: str = Depends(require_user)):
-    """Remove auto-discovered forms that were never activated and have no leads."""
+    """Remove every inactive form that has no leads."""
     from .models import Lead
     used = {r[0] for r in db.query(Lead.form_id).filter(Lead.form_id.isnot(None)).distinct().all()}
     n = 0
-    for r in db.query(FormConfig).filter(FormConfig.auto_created == True, FormConfig.is_active == False).all():  # noqa: E712
+    for r in db.query(FormConfig).filter(FormConfig.is_active == False).all():  # noqa: E712
         if r.form_id not in used:
             db.delete(r); n += 1
     db.commit()
