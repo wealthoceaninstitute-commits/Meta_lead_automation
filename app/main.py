@@ -847,12 +847,27 @@ def conversations(db: Session = Depends(get_db), user: str = Depends(require_use
         mid = last_id_by_phone.get(clean_phone(l.phone or ""), 0) or 0
         return mid
 
+    # One conversation per phone number. The same person can have several lead
+    # rows (e.g. filled both the Friday and Sunday forms); the chat is per phone,
+    # so show a single entry (newest lead) with unread counts combined.
+    by_phone: dict = {}
+    for l in sorted(leads, key=lambda x: x.id or 0, reverse=True):
+        ph = clean_phone(l.phone or "")
+        if not ph:
+            continue
+        if ph not in by_phone:
+            by_phone[ph] = [l, 0]
+        by_phone[ph][1] += (l.unread_count or 0)
+    leads = [v[0] for v in by_phone.values()]
+    unread_total = {ph: v[1] for ph, v in by_phone.items()}
+
     leads.sort(key=activity_key, reverse=True)
 
     rows = []
     for l in leads:
         d = LeadOut.model_validate(l).model_dump()
         ph = clean_phone(l.phone or "")
+        d["unread_count"] = unread_total.get(ph, d.get("unread_count") or 0)
         # last_activity_at = timestamp of the most recent message (in or out)
         d["last_activity_at"] = latest_ts_by_phone.get(ph) or l.latest_reply_at or l.whatsapp_sent_at
         rows.append(d)
@@ -866,8 +881,9 @@ def thread(phone: str, db: Session = Depends(get_db), user: str = Depends(requir
     msgs = db.query(WhatsAppMessage).filter(WhatsAppMessage.phone == p).order_by(WhatsAppMessage.id.asc()).all()
     lead = db.query(Lead).filter(Lead.phone == p).order_by(Lead.id.desc()).first()
     if lead:
-        lead.unread_count = 0
+        db.query(Lead).filter(Lead.phone == p, Lead.unread_count > 0).update({"unread_count": 0})
         db.commit()
+        db.refresh(lead)
     # Fill in the real text of template messages first (older rows only hold a placeholder)
     rendered = {m.id: ensure_rendered(db, m) for m in msgs if m.message_type == "template"}
     return {
