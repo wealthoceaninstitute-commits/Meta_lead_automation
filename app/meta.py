@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from . import graph
 from .config import settings
 from .form_config import resolve_session, parse_created_time
-from .models import Lead, WhatsAppMessage, WhatsAppStatusLog
+from .models import Lead, FollowUp, WhatsAppMessage, WhatsAppStatusLog
 from .utils import clean_phone, now_iso
 from .whatsapp import send_whatsapp_template
 
@@ -256,6 +256,26 @@ def upsert_lead_from_meta(db: Session, lead_id: str, raw: dict | None = None,
     lead.created_time = data.get("created_time") or lead.created_time
     lead.full_name = name or lead.full_name
     lead.phone = phone or lead.phone
+
+    # The customer may have messaged on WhatsApp before this ad lead was pulled in; that
+    # created a placeholder lead (status "WhatsApp", no meta id). Fold it into this lead
+    # so the person is one lead with one chat, not two.
+    if phone:
+        try:
+            for ph in (db.query(Lead).filter(Lead.phone == phone, Lead.id != lead.id,
+                                             Lead.meta_lead_id.is_(None), Lead.status == "WhatsApp").all()):
+                db.query(WhatsAppMessage).filter(WhatsAppMessage.lead_id == ph.id).update({"lead_id": lead.id})
+                db.query(FollowUp).filter(FollowUp.lead_id == ph.id).update({"lead_id": lead.id})
+                if ph.latest_reply_text and not lead.latest_reply_text:
+                    lead.latest_reply_text = ph.latest_reply_text
+                    lead.latest_reply_at = ph.latest_reply_at
+                lead.unread_count = (lead.unread_count or 0) + (ph.unread_count or 0)
+                db.delete(ph)
+            db.flush()
+        except Exception as exc:
+            db.rollback()
+            print(f"[Meta] placeholder merge skipped: {exc}", flush=True)
+            lead = db.query(Lead).filter(Lead.meta_lead_id == lead_id).first()
     lead.email = email or lead.email
     lead.city = city or lead.city
     lead.experience = exp or lead.experience
