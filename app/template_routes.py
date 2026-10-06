@@ -17,15 +17,18 @@ import re
 import requests
 from typing import Any, Optional, List
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+import time
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from .auth import require_user
 from . import tokens
 from .config import settings
 from .db import get_db
-from .models import WhatsAppTemplate, WhatsAppMessage
+from .models import WhatsAppTemplate, WhatsAppMessage, TemplateHeaderImage
 from .utils import now_iso, clean_phone
 from .whatsapp_status import extract_status_error
 
@@ -414,6 +417,81 @@ async def upload_send_media(
         raise HTTPException(status_code=502, detail="No media ID returned from WhatsApp")
 
     return {"media_id": media_id, "filename": file.filename, "mime": mime}
+
+
+# ─────────────────────────────────────────────────────────────
+# Header image for automatic invites
+# ─────────────────────────────────────────────────────────────
+# A template with an IMAGE header needs that image on EVERY message. The image is
+# uploaded here once per template, stored in the database, and served from a public
+# URL that WhatsApp downloads when an invite is sent.
+
+MAX_HEADER_IMAGE_BYTES = 5 * 1024 * 1024
+_IMG_MAGIC = {"image/png": b"\x89PNG", "image/jpeg": b"\xff\xd8"}
+
+
+def _public_base(request: Request) -> str:
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host")
+            or request.url.netloc).split(",")[0].strip()
+    proto = (request.headers.get("x-forwarded-proto")
+             or ("http" if host.startswith(("localhost", "127.")) else "https")).split(",")[0].strip()
+    return f"{proto}://{host}"
+
+
+@router.post("/{template_id}/header-image")
+async def upload_header_image(
+    template_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: str = Depends(require_user),
+):
+    tmpl = db.query(WhatsAppTemplate).filter(WhatsAppTemplate.id == template_id).first()
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    content = await file.read()
+    mime = (file.content_type or "").lower().replace("image/jpg", "image/jpeg")
+    if mime not in _IMG_MAGIC or not content.startswith(_IMG_MAGIC[mime]):
+        raise HTTPException(status_code=400, detail="Please upload a JPG or PNG image.")
+    if len(content) > MAX_HEADER_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="Image is too large — WhatsApp allows at most 5 MB.")
+
+    url = f"{_public_base(request)}/templates/header-image/{quote(tmpl.name, safe='')}?v={int(time.time())}"
+    row = db.get(TemplateHeaderImage, tmpl.name)
+    if row:
+        row.content_type, row.data, row.size, row.url = mime, content, len(content), url
+    else:
+        db.add(TemplateHeaderImage(template_name=tmpl.name, content_type=mime, data=content,
+                                   size=len(content), url=url))
+    db.commit()
+    db.refresh(tmpl)
+    return _tmpl_out(tmpl)
+
+
+@router.delete("/{template_id}/header-image")
+def delete_header_image(
+    template_id: int,
+    db: Session = Depends(get_db),
+    user: str = Depends(require_user),
+):
+    tmpl = db.query(WhatsAppTemplate).filter(WhatsAppTemplate.id == template_id).first()
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    row = db.get(TemplateHeaderImage, tmpl.name)
+    if row:
+        db.delete(row)
+        db.commit()
+    return _tmpl_out(tmpl)
+
+
+@router.get("/header-image/{name}")
+def serve_header_image(name: str, db: Session = Depends(get_db)):
+    """PUBLIC (no login): WhatsApp's servers fetch the header image from here."""
+    row = db.get(TemplateHeaderImage, name)
+    if not row:
+        raise HTTPException(status_code=404, detail="No image")
+    return Response(content=row.data, media_type=row.content_type,
+                    headers={"Cache-Control": "public, max-age=3600"})
 
 
 @router.post("")
@@ -944,7 +1022,12 @@ def _extract_header_media_url(meta_raw: dict) -> Optional[str]:
 
 def _tmpl_out(t: WhatsAppTemplate) -> dict:
     header_media_url = _extract_header_media_url(t.meta_raw or {})
+    _sess = object_session(t)
+    _img = _sess.get(TemplateHeaderImage, t.name) if _sess is not None else None
     return {
+        # image used for AUTOMATIC invites (uploaded on the Templates page)
+        "header_image_url": _img.url if _img else None,
+        "header_image_updated": _img.updated_at.isoformat() if _img and _img.updated_at else None,
         "id": t.id,
         "meta_template_id": t.meta_template_id,
         "name": t.name,
