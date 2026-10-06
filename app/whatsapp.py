@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from . import graph
 from .config import settings
 from .form_config import PARAM_KEYS
-from .models import Lead, WhatsAppMessage, WhatsAppTemplate
+from .models import Lead, WhatsAppMessage, WhatsAppTemplate, TemplateHeaderImage
 from .utils import now_iso, clean_phone
 
 # WhatsApp error codes that will never succeed on retry
@@ -100,9 +100,13 @@ def _template_shape(tmpl) -> dict:
             "positional": max(numeric) if numeric else 0}
 
 
-def _header_url(template_name: str) -> str:
-    """Public URL of the header image/video/document for a template.
-    WA_HEADER_IMAGES = "template_name=https://…  other_template=https://…" """
+def _header_url(db: Session, template_name: str) -> str:
+    """Public URL of the header image for a template.
+    1) the image uploaded in CRM → Templates   2) WA_HEADER_IMAGES env fallback
+       ("template_name=https://…  other_template=https://…")"""
+    row = db.get(TemplateHeaderImage, template_name)
+    if row and row.url:
+        return row.url
     for pair in re.split(r"[\s,;]+", settings.wa_header_images or ""):
         if "=" in pair:
             name, url = pair.split("=", 1)
@@ -129,11 +133,11 @@ def _build_components(db: Session, lead: "Lead", template_name: str, lang: str =
     # ── header ──
     fmt = shape["header"]
     if fmt in ("IMAGE", "VIDEO", "DOCUMENT"):
-        url = _header_url(template_name)
+        url = _header_url(db, template_name)
         if not url:
             raise TemplateConfigError(
-                f"Template '{template_name}' has an {fmt} header, but no public {fmt.lower()} URL is "
-                f"set. Add to the backend environment: WA_HEADER_IMAGES={template_name}=https://<public-url-of-the-image>")
+                f"Template '{template_name}' has an {fmt} header but no image is set. In CRM → Templates, "
+                f"open '{template_name}' and click 'Upload image'.")
         kind = fmt.lower()
         comps.append({"type": "header", "parameters": [{"type": kind, kind: {"link": url}}]})
 
