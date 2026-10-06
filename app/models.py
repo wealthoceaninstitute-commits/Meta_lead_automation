@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey, JSON, Index
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey, JSON, Index, LargeBinary
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from .db import Base
@@ -167,6 +167,18 @@ class WhatsAppTemplate(Base):
     rejection_reason     = Column(Text, nullable=True)
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
     updated_at           = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TemplateHeaderImage(Base):
+    """Image sent as the header of automatic invites for a WhatsApp template.
+    Uploaded from CRM → Templates; served publicly (WhatsApp downloads it from `url`)."""
+    __tablename__ = "template_header_images"
+    template_name = Column(String(255), primary_key=True)
+    content_type  = Column(String(80), nullable=False)
+    data          = Column(LargeBinary, nullable=False)
+    size          = Column(Integer, nullable=False, default=0)
+    url           = Column(Text, nullable=False)
+    updated_at    = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class AppSetting(Base):
