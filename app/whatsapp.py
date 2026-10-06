@@ -165,6 +165,70 @@ def _build_components(db: Session, lead: "Lead", template_name: str, lang: str =
     return comps
 
 
+def render_template_message(db: Session, template_name: str, lang: str, components: list) -> dict | None:
+    """What the customer actually sees: header image, body with the variables filled in,
+    footer and buttons. Built from the approved template + the components that were sent."""
+    tmpl = _load_template(db, template_name, lang)
+    if not tmpl:
+        return None
+    comps = (tmpl.meta_raw or {}).get("components") or []
+
+    def part(kind):
+        return next((c for c in comps if str(c.get("type", "")).upper() == kind), None) or {}
+
+    body = part("BODY").get("text") or tmpl.body_text or ""
+    sent_body = next((c for c in components if c.get("type") == "body"), None) or {}
+    for i, p in enumerate(sent_body.get("parameters", []), 1):
+        val = p.get("text", "")
+        key = re.escape(p["parameter_name"]) if p.get("parameter_name") else str(i)
+        body = re.sub(r"\{\{\s*" + key + r"\s*\}\}", lambda m: val, body)
+
+    header = None
+    sent_header = next((c for c in components if c.get("type") == "header"), None)
+    if sent_header and sent_header.get("parameters"):
+        hp = sent_header["parameters"][0]
+        kind = hp.get("type")
+        header = {"type": kind, "url": (hp.get(kind) or {}).get("link") if isinstance(hp.get(kind), dict) else None,
+                  "text": hp.get("text")}
+
+    btn_src = part("BUTTONS").get("buttons") or tmpl.buttons or []
+    return {
+        "template": template_name,
+        "header": header,
+        "body": body.strip(),
+        "footer": part("FOOTER").get("text") or tmpl.footer_text or "",
+        "buttons": [{"type": b.get("type"), "text": b.get("text")} for b in btn_src if b.get("text")],
+    }
+
+
+def ensure_rendered(db: Session, m: "WhatsAppMessage") -> dict | None:
+    """Rendered text for a stored outgoing template message. Older rows only hold the
+    placeholder '[Template sent to …]' – rebuild them once from the lead's form config
+    and save the result, so the inbox shows the real message."""
+    raw = m.raw if isinstance(m.raw, dict) else {}
+    if raw.get("rendered"):
+        return raw["rendered"]
+    if m.message_type != "template" or not m.lead_id:
+        return None
+    from .form_config import get_form_config
+    lead = db.get(Lead, m.lead_id)
+    cfg = get_form_config(lead.form_id or "", db) if lead and lead.form_id else None
+    template = ((cfg or {}).get("wa_template") or "").strip()
+    if not template:
+        return None
+    lang = (cfg or {}).get("wa_language") or "en"
+    try:
+        comps = _build_components(db, lead, template, lang, (cfg or {}).get("wa_params", ""))
+        rendered = render_template_message(db, template, lang, comps)
+    except Exception:
+        return None
+    if rendered:
+        m.body = rendered["body"]
+        m.raw = {**raw, "rendered": rendered}
+        db.commit()
+    return rendered
+
+
 def _fmt_error(e: "graph.GraphError") -> str:
     return str(e)[:400]
 
@@ -235,7 +299,11 @@ def send_whatsapp_template(
     lead.whatsapp_error = None
     lead.whatsapp_failed = False
     db.commit()
-    save_outgoing_template_message(db, lead, wamid=wamid, status="accepted", raw=resp)
+    try:
+        rendered = render_template_message(db, template, lang, components)
+    except Exception:
+        rendered = None
+    save_outgoing_template_message(db, lead, wamid=wamid, status="accepted", raw=resp, rendered=rendered)
     return {"ok": True, "wamid": wamid, "template": template}
 
 
@@ -272,7 +340,8 @@ def send_text_reply(db: Session, phone: str, text: str, lead: "Lead" = None) -> 
 
 
 def save_outgoing_template_message(db: Session, lead: "Lead", wamid: str = None,
-                                   status: str = "accepted", raw: dict = None) -> "WhatsAppMessage":
+                                   status: str = "accepted", raw: dict = None,
+                                   rendered: dict = None) -> "WhatsAppMessage":
     if not lead.phone:
         return None
     existing = None
@@ -286,14 +355,17 @@ def save_outgoing_template_message(db: Session, lead: "Lead", wamid: str = None,
         if wamid and not existing.wa_message_id:
             existing.wa_message_id = wamid
         existing.status = status
+        if rendered:
+            existing.body = rendered["body"]
+            existing.raw = {**(existing.raw if isinstance(existing.raw, dict) else {}), **(raw or {}), "rendered": rendered}
         db.commit()
         return existing
 
     msg = WhatsAppMessage(
         wa_message_id=wamid, lead_id=lead.id, phone=clean_phone(lead.phone),
         contact_name=lead.full_name, direction="outgoing", message_type="template",
-        body=f"[Template sent to {lead.full_name or lead.phone}]", status=status,
-        raw=raw or {}, timestamp=now_iso(),
+        body=(rendered or {}).get("body") or f"[Template sent to {lead.full_name or lead.phone}]", status=status,
+        raw={**(raw or {}), **({"rendered": rendered} if rendered else {})}, timestamp=now_iso(),
     )
     db.add(msg)
     db.commit()
