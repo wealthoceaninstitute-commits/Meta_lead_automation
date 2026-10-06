@@ -4,12 +4,14 @@ WhatsApp Cloud API — sends templates and text replies.
 Template + variables are driven by FormConfig (wa_template / wa_params), so a new
 campaign never needs a code change.
 """
+import re
+
 from sqlalchemy.orm import Session
 
 from . import graph
 from .config import settings
 from .form_config import PARAM_KEYS
-from .models import Lead, WhatsAppMessage
+from .models import Lead, WhatsAppMessage, WhatsAppTemplate
 from .utils import now_iso, clean_phone
 
 # WhatsApp error codes that will never succeed on retry
@@ -41,14 +43,122 @@ def _values(lead: "Lead") -> dict:
     }
 
 
-def _build_components(lead: "Lead", template_name: str, params_spec: str = "") -> list:
-    """Body parameters in the order given by `params_spec` ("name,session_date,…"),
-    taken from the form's config. No built-in layouts: no spec = no variables."""
+class TemplateConfigError(Exception):
+    """The template and the form's configuration don't fit together. Raised BEFORE
+    anything is sent, so the message tells you exactly what to fix (instead of Meta's
+    generic #132000 'number of parameters does not match')."""
+
+
+# Friendly names people type in Form Config → the keys this app knows.
+_KEY_ALIASES = {
+    "customer_name": "name", "client_name": "name", "customer": "name", "client": "name",
+    "full_name": "name", "lead_name": "name", "first_name": "name",
+    "campaign_name": "campaign", "day": "session_day", "date": "session_date",
+    "time": "session_time",
+}
+
+
+def _norm_key(k: str) -> str:
+    k = (k or "").strip().lower()
+    return _KEY_ALIASES.get(k, k)
+
+
+def _clean_text(v) -> str:
+    """Meta rejects newlines / tabs / 5+ spaces inside a template parameter (#132018)."""
+    v = re.sub(r"[\r\n\t]+", " ", str(v or ""))
+    v = re.sub(r" {5,}", "    ", v).strip()
+    return v or "-"
+
+
+def _load_template(db: Session, name: str, lang: str):
+    rows = (db.query(WhatsAppTemplate).filter(WhatsAppTemplate.name == name)
+            .order_by(WhatsAppTemplate.id.desc()).all())
+    for r in rows:
+        if (r.language or "").lower() == (lang or "").lower():
+            return r
+    return rows[0] if rows else None
+
+
+def _template_shape(tmpl) -> dict:
+    """What the approved template needs at send time: header kind + body variables."""
+    raw = (tmpl.meta_raw or {}) if tmpl else {}
+    comps = raw.get("components") or []
+    header = next((c for c in comps if str(c.get("type", "")).upper() == "HEADER"), None)
+    body = next((c for c in comps if str(c.get("type", "")).upper() == "BODY"), None)
+    header_fmt = str((header or {}).get("format") or "").upper()
+    if not header and tmpl and tmpl.header_type:
+        header_fmt = str(tmpl.header_type).upper()
+    if header_fmt == "NONE":
+        header_fmt = ""
+    body_text = (body or {}).get("text") or (tmpl.body_text if tmpl else "") or ""
+    named = []
+    for n in re.findall(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", body_text):
+        if n not in named:
+            named.append(n)
+    numeric = [int(n) for n in re.findall(r"\{\{\s*(\d+)\s*\}\}", body_text)]
+    return {"known": bool(tmpl), "header": header_fmt, "named": named,
+            "positional": max(numeric) if numeric else 0}
+
+
+def _header_url(template_name: str) -> str:
+    """Public URL of the header image/video/document for a template.
+    WA_HEADER_IMAGES = "template_name=https://…  other_template=https://…" """
+    for pair in re.split(r"[\s,;]+", settings.wa_header_images or ""):
+        if "=" in pair:
+            name, url = pair.split("=", 1)
+            if name.strip() == template_name and url.strip():
+                return url.strip()
+    return ""
+
+
+def _build_components(db: Session, lead: "Lead", template_name: str, lang: str = "en",
+                      params_spec: str = "") -> list:
+    """Header + body components the way the approved template wants them.
+
+    * body values come from the form's "Template variables" (Form Config), in order;
+      friendly names such as customer_name are accepted as `name`
+    * a template with NAMED variables ({{customer_name}}) gets `parameter_name` on each value
+    * a template with an IMAGE/VIDEO/DOCUMENT header gets that media (public link) – WhatsApp
+      rejects the message without it
+    Raises TemplateConfigError (nothing is sent) when something required is missing."""
     vals = _values(lead)
-    keys = [k.strip() for k in (params_spec or "").split(",") if k.strip() in PARAM_KEYS]
-    if not keys:
-        return []          # template without body variables
-    return [{"type": "body", "parameters": [{"type": "text", "text": vals[k]} for k in keys]}]
+    keys = [k for k in (_norm_key(x) for x in (params_spec or "").split(",")) if k in PARAM_KEYS]
+    shape = _template_shape(_load_template(db, template_name, lang))
+    comps: list = []
+
+    # ── header ──
+    fmt = shape["header"]
+    if fmt in ("IMAGE", "VIDEO", "DOCUMENT"):
+        url = _header_url(template_name)
+        if not url:
+            raise TemplateConfigError(
+                f"Template '{template_name}' has an {fmt} header, but no public {fmt.lower()} URL is "
+                f"set. Add to the backend environment: WA_HEADER_IMAGES={template_name}=https://<public-url-of-the-image>")
+        kind = fmt.lower()
+        comps.append({"type": "header", "parameters": [{"type": kind, kind: {"link": url}}]})
+
+    # ── body ──
+    params: list = []
+    if shape["named"]:
+        for i, pname in enumerate(shape["named"]):
+            key = keys[i] if i < len(keys) else _norm_key(pname)
+            if key not in vals:
+                raise TemplateConfigError(
+                    f"Template '{template_name}' variable {{{{{pname}}}}} has no value. In Form Config → "
+                    f"Template variables use, in order: {', '.join(PARAM_KEYS)} (e.g. 'name').")
+            params.append({"type": "text", "parameter_name": pname, "text": _clean_text(vals[key])})
+    elif shape["positional"]:
+        if len(keys) < shape["positional"]:
+            raise TemplateConfigError(
+                f"Template '{template_name}' needs {shape['positional']} variable(s) but Form Config lists "
+                f"{len(keys)}. Set 'Template variables' (allowed: {', '.join(PARAM_KEYS)}).")
+        params = [{"type": "text", "text": _clean_text(vals[k])} for k in keys[:shape["positional"]]]
+    elif not shape["known"] and keys:
+        # template not synced into the CRM yet → old behaviour (positional values)
+        params = [{"type": "text", "text": _clean_text(vals[k])} for k in keys]
+    if params:
+        comps.append({"type": "body", "parameters": params})
+    return comps
 
 
 def _fmt_error(e: "graph.GraphError") -> str:
@@ -79,12 +189,22 @@ def send_whatsapp_template(
 
     template = template_name.strip()
     lang = language or "en"
+    try:
+        components = _build_components(db, lead, template, lang, params_spec)
+    except TemplateConfigError as e:
+        # Nothing was sent and nothing is marked as failed for good: once the form /
+        # environment is fixed the invite can go out (retry or the Send Invite button).
+        lead.whatsapp_error = str(e)[:400]
+        db.commit()
+        print(f"[WA] NOT SENT (template setup): {e}", flush=True)
+        return {"ok": False, "reason": "template_config", "error": str(e), "kind": "config",
+                "retryable": False, "template": template}
     payload = {
         "messaging_product": "whatsapp",
         "to": clean_phone(lead.phone),
         "type": "template",
         "template": {"name": template, "language": {"code": lang},
-                     "components": _build_components(lead, template, params_spec)},
+                     "components": components},
     }
     print(f"[WA] Sending template={template} to={lead.phone}", flush=True)
     lead.wa_attempts = (lead.wa_attempts or 0) + 1
