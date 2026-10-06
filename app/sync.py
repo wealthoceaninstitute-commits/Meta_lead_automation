@@ -21,7 +21,7 @@ from .alerts import notify, log_event
 from .config import settings
 from .db import SessionLocal
 from .form_config import infer_day, ensure_form_row
-from .meta import upsert_lead_from_meta, is_fresh, LEAD_FIELDS_EXT, LEAD_FIELDS_BASE
+from .meta import merge_whatsapp_placeholders, upsert_lead_from_meta, is_fresh, LEAD_FIELDS_EXT, LEAD_FIELDS_BASE
 from .models import Lead, FormConfig
 from .whatsapp import send_template_for_lead
 
@@ -224,6 +224,11 @@ def run_cycle(force_check: bool = False) -> dict:
                 summary["forms"] = discover_forms(db)
                 summary["pull"] = pull_recent_leads(db)
             summary["retry"] = retry_pending(db, meta_ok=meta_ok, wa_ok=wa_ok)
+            try:
+                summary["merged_duplicates"] = merge_whatsapp_placeholders(db)
+            except Exception as exc:
+                db.rollback()
+                print(f"[sync] merge error: {exc}", flush=True)
 
             stuck = db.query(Lead).filter(
                 Lead.sync_status == "needs_config",
