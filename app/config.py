@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     whatsapp_access_token:     str  = Field(default="", alias="WHATSAPP_ACCESS_TOKEN")
     whatsapp_phone_number_id:  str  = Field(default="", alias="WHATSAPP_PHONE_NUMBER_ID")
     whatsapp_business_account_id: str = Field(default="", alias="WHATSAPP_BUSINESS_ACCOUNT_ID")
+    # Public image/video/document URL for templates that have a media HEADER, as
+    # "template_name=https://…" pairs (space/comma separated).
+    wa_header_images:          str  = Field(default="", alias="WA_HEADER_IMAGES")
 
     # NOTE: WhatsApp template name / language / variables are NOT configured here any more —
     # they live per form in CRM → Form Config.
