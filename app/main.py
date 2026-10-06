@@ -13,7 +13,7 @@ from .models import Lead, FollowUp, WhatsAppMessage
 from .auth import LoginIn, TokenOut, create_token, require_user
 from .schemas import LeadOut, LeadCreate, LeadUpdate, FollowUpIn, ReplyIn, TestWhatsAppIn
 from .utils import clean_phone, get_seminar_details, now_iso
-from .whatsapp import send_template_for_lead, send_text_reply, save_outgoing_template_message
+from .whatsapp import send_template_for_lead, send_text_reply, save_outgoing_template_message, ensure_rendered
 from .meta import classify_webhook_and_handle, upsert_lead_from_meta
 from .form_config_routes import router as form_config_router
 from .template_routes import router as template_router
@@ -868,12 +868,15 @@ def thread(phone: str, db: Session = Depends(get_db), user: str = Depends(requir
     if lead:
         lead.unread_count = 0
         db.commit()
+    # Fill in the real text of template messages first (older rows only hold a placeholder)
+    rendered = {m.id: ensure_rendered(db, m) for m in msgs if m.message_type == "template"}
     return {
         "lead": LeadOut.model_validate(lead).model_dump() if lead else None,
         "messages": [
             {
                 "id": m.id, "wa_message_id": m.wa_message_id, "direction": m.direction,
                 "body": m.body, "status": m.status, "message_type": m.message_type,
+                "rendered": rendered.get(m.id),
                 "timestamp": m.timestamp or (str(m.created_at) if m.created_at else None),
                 "created_at": str(m.created_at) if m.created_at else None,
             }
