@@ -177,6 +177,32 @@ def _extract_incoming_text(m: dict, msg_type: str) -> str:
 
 # ── main entry point ────────────────────────────────────────────────────────
 
+def merge_whatsapp_placeholders(db: Session) -> int:
+    """Fold bare "WhatsApp" leads (created when someone messaged before their ad lead was
+    pulled in) into the real ad lead with the same phone. Idempotent; run every sync cycle."""
+    n = 0
+    bare = db.query(Lead).filter(Lead.status == "WhatsApp", Lead.meta_lead_id.is_(None),
+                                 Lead.phone.isnot(None), Lead.phone != "").all()
+    for ph in bare:
+        real = (db.query(Lead).filter(Lead.phone == ph.phone, Lead.id != ph.id, Lead.meta_lead_id.isnot(None))
+                .order_by(Lead.id.desc()).first())
+        if not real:
+            continue
+        try:
+            db.query(WhatsAppMessage).filter(WhatsAppMessage.lead_id == ph.id).update({"lead_id": real.id})
+            db.query(FollowUp).filter(FollowUp.lead_id == ph.id).update({"lead_id": real.id})
+            if ph.latest_reply_text and (not real.latest_reply_at or (ph.latest_reply_at or "") >= real.latest_reply_at):
+                real.latest_reply_text, real.latest_reply_at = ph.latest_reply_text, ph.latest_reply_at
+            real.unread_count = (real.unread_count or 0) + (ph.unread_count or 0)
+            db.delete(ph)
+            db.commit()
+            n += 1
+        except Exception as exc:
+            db.rollback()
+            print(f"[Meta] merge placeholder {ph.id} failed: {exc}", flush=True)
+    return n
+
+
 def upsert_lead_from_meta(db: Session, lead_id: str, raw: dict | None = None,
                           auto_send: bool = True, webhook_value: dict | None = None,
                           force_refetch: bool = False):
