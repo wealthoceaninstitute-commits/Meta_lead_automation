@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey, JSON, Index, LargeBinary
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey, JSON, Index, LargeBinary, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from .db import Base
@@ -198,3 +198,22 @@ class SystemEvent(Base):
     level      = Column(String(20), default="info")   # info | warn | error
     message    = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReminderLog(Base):
+    """One row per automatic reminder (4 hours / 1 hour before the seminar) per lead and
+    seminar date. The unique key is what guarantees nobody is messaged twice."""
+    __tablename__ = "reminder_logs"
+    __table_args__ = (UniqueConstraint("lead_id", "kind", "session_date", name="uq_reminder_lead_kind_date"),)
+
+    id           = Column(Integer, primary_key=True, index=True)
+    lead_id      = Column(Integer, ForeignKey("leads.id"), index=True, nullable=False)
+    kind         = Column(String(20), nullable=False)       # 4hr | 1hr | test-4hr | test-1hr
+    session_date = Column(String(20), nullable=False)       # ISO date of the seminar
+    template     = Column(String(255), nullable=True)
+    status       = Column(String(20), default="sent")       # sent | failed
+    attempts     = Column(Integer, default=1)
+    wamid        = Column(String(500), index=True, nullable=True)
+    error        = Column(Text, nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at   = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
