@@ -19,6 +19,7 @@ from .form_config_routes import router as form_config_router
 from .template_routes import router as template_router
 from .system_routes import router as system_router
 from .purge_routes import router as purge_router
+from .reminder_routes import router as reminder_router
 from .whatsapp_status import apply_status_updates
 from .db import SessionLocal
 from . import tokens
@@ -29,6 +30,7 @@ app.include_router(template_router)
 app.include_router(form_config_router)
 app.include_router(system_router)
 app.include_router(purge_router)
+app.include_router(reminder_router)
 
 KEEP_ALIVE_TASK = None
 
@@ -102,6 +104,22 @@ async def scheduler_loop():
         await asyncio.sleep(max(1, settings.sync_interval_minutes) * 60)
 
 
+async def reminder_loop():
+    """Seminar reminders (4 h / 1 h before). Checked every 2 minutes - much finer than the
+    20-minute lead-sync cycle, because a '1 hour left' message must not arrive late."""
+    from .reminders import run_due
+    await asyncio.sleep(45)
+    while True:
+        try:
+            await asyncio.to_thread(run_due)
+        except Exception as exc:
+            print(f"[reminders] crashed: {exc}", flush=True)
+        await asyncio.sleep(120)
+
+
+REMINDER_TASK = None
+
+
 @app.on_event("startup")
 async def _startup():
     init_db()
@@ -119,6 +137,8 @@ async def _startup():
         KEEP_ALIVE_TASK = asyncio.create_task(keep_alive_ping())
     if settings.scheduler_enabled:
         SCHEDULER_TASK = asyncio.create_task(scheduler_loop())
+        global REMINDER_TASK
+        REMINDER_TASK = asyncio.create_task(reminder_loop())
 
 
 @app.on_event("shutdown")
