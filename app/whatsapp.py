@@ -55,6 +55,13 @@ _KEY_ALIASES = {
     "full_name": "name", "lead_name": "name", "first_name": "name",
     "campaign_name": "campaign", "day": "session_day", "date": "session_date",
     "time": "session_time",
+    # names used inside reminder / event templates ({{event_time}}, {{venue_name}} …)
+    "event_time": "session_time", "seminar_time": "session_time", "session_start": "session_time",
+    "event_date": "session_date", "seminar_date": "session_date",
+    "event_day": "session_day", "seminar_day": "session_day",
+    "venue_name": "venue", "location": "venue", "event_venue": "venue", "session_venue": "venue",
+    "reporting_time": "arrival_time", "arrival": "arrival_time",
+    "city_name": "city",
 }
 
 
