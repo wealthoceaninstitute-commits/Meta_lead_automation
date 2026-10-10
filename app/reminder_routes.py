@@ -26,6 +26,11 @@ class SettingsIn(BaseModel):
     rules: dict[str, RuleIn] | None = None
 
 
+class InvitesIn(BaseModel):
+    Friday: RuleIn | None = None
+    Sunday: RuleIn | None = None
+
+
 class TestIn(BaseModel):
     lead_id: int
     kind: str = "4hr"
@@ -47,6 +52,7 @@ def get_settings(db: Session = Depends(get_db), user: str = Depends(require_user
              .order_by(WhatsAppTemplate.name).all())
     return {
         "settings": cfg,
+        "invites": reminders.load_invites(),
         "templates": [_tmpl_info(db, t) for t in tmpls],
         "now": datetime.now(reminders.tz()).isoformat(),
         "timezone": str(reminders.tz()),
@@ -59,6 +65,13 @@ def put_settings(data: SettingsIn, user: str = Depends(require_user)):
     if "rules" in payload:
         payload["rules"] = {k: {f: v for f, v in r.items() if v is not None} for k, r in payload["rules"].items()}
     return {"settings": reminders.save_settings(payload)}
+
+
+@router.put("/invites")
+def put_invites(data: InvitesIn, user: str = Depends(require_user)):
+    payload = data.model_dump(exclude_none=True) if hasattr(data, "model_dump") else data.dict(exclude_none=True)
+    payload = {d: {f: v for f, v in r.items() if v is not None} for d, r in payload.items()}
+    return {"invites": reminders.save_invites(payload)}
 
 
 @router.get("/upcoming")
