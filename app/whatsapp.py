@@ -250,6 +250,7 @@ def send_whatsapp_template(
     language: str = "en",
     force: bool = False,
     params_spec: str = "",
+    overrides: dict | None = None,
 ) -> dict:
     """Send a template to a lead. Never raises: returns {ok, retryable, error,…}."""
     if not settings.whatsapp_enabled:
@@ -268,7 +269,7 @@ def send_whatsapp_template(
     template = template_name.strip()
     lang = language or "en"
     try:
-        components = _build_components(db, lead, template, lang, params_spec)
+        components = _build_components(db, lead, template, lang, params_spec, overrides=overrides)
     except TemplateConfigError as e:
         # Nothing was sent and nothing is marked as failed for good: once the form /
         # environment is fixed the invite can go out (retry or the Send Invite button).
@@ -319,13 +320,33 @@ def send_whatsapp_template(
 
 def send_template_for_lead(db: Session, lead: "Lead", force: bool = False,
                            template_type: str = "registration") -> dict:
-    """Used by the manual 'Send Invite' button: picks template/params from the lead's form config."""
+    """Used by the manual 'Send Invite' button and the automatic registration message.
+
+    * invitation  -> the invite configured for the SEMINAR DAY (CRM -> Reminders -> Invites),
+                     where the day comes from the latest follow-up date, else the lead's date;
+                     falls back to the form's template when no per-day invite is set.
+    * registration -> the form's template (unchanged)."""
     from .form_config import get_form_config
     cfg = get_form_config(lead.form_id or "", db) if lead.form_id else None
     template = (cfg or {}).get("wa_template") or ""
     language = (cfg or {}).get("wa_language") or "en"
-    return send_whatsapp_template(db, lead, template_name=template, language=language, force=force,
-                                  params_spec=(cfg or {}).get("wa_params", ""))
+    params = (cfg or {}).get("wa_params", "")
+    overrides = None
+    day = ""
+    if template_type == "invitation":
+        try:
+            from . import reminders
+            plan = reminders.invite_plan(db, lead)
+            overrides, day = plan["overrides"] or None, plan["day"]
+            if plan["template"]:
+                template, language, params = plan["template"], plan["language"], plan["params"]
+        except Exception as e:  # never block an invite because of the day lookup
+            print(f"[WA] invite day lookup failed: {e}", flush=True)
+    res = send_whatsapp_template(db, lead, template_name=template, language=language, force=force,
+                                 params_spec=params, overrides=overrides)
+    if isinstance(res, dict) and day:
+        res["day"] = day
+    return res
 
 
 def send_text_reply(db: Session, phone: str, text: str, lead: "Lead" = None) -> dict:
