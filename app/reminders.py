@@ -28,7 +28,8 @@ from sqlalchemy.orm import Session
 from . import graph, tokens
 from .alerts import log_event
 from .config import settings as app_settings
-from .form_config import day_defaults, parse_start_time, WEEKDAYS
+from .form_config import day_defaults, get_form_config, parse_start_time, WEEKDAYS
+from .models import FormConfig
 from .models import Lead, FollowUp, ReminderLog, WhatsAppMessage
 from .utils import now_iso, clean_phone
 from . import whatsapp as wa
@@ -113,8 +114,10 @@ def parse_date(value) -> date | None:
     return None
 
 
-def seminar_datetime(db: Session, lead: Lead) -> tuple[datetime | None, str]:
-    """(start datetime in seminar timezone, why-not text). A follow-up's date overrides the lead's."""
+def seminar_info(db: Session, lead: Lead) -> tuple[dict | None, str]:
+    """Everything about the seminar this lead will attend: start datetime plus the day / date /
+    time / arrival / venue texts that go into the message. A follow-up's date overrides the
+    lead's; the CURRENT Form Config of that weekday wins over the copy stored on the lead."""
     latest = (db.query(FollowUp).filter(FollowUp.lead_id == lead.id, FollowUp.session_date.isnot(None),
                                         FollowUp.session_date != "")
               .order_by(FollowUp.id.desc()).first())
@@ -123,16 +126,41 @@ def seminar_datetime(db: Session, lead: Lead) -> tuple[datetime | None, str]:
         d = parse_date(lead.session_date)
     if d is None:
         return None, "no seminar date"
-    time_text = lead.session_time or ""
     weekday_name = [k for k, v in WEEKDAYS.items() if v == d.weekday()]
     day_name = (weekday_name[0] if weekday_name else "").capitalize()
-    # moved to another weekday than the lead's original → use that day's default time
-    if day_name and (lead.session_day or "").lower() != day_name.lower():
-        time_text = (day_defaults().get(day_name) or {}).get("session_time") or time_text
+
+    cfg_row = get_form_config(lead.form_id or "", db) if lead.form_id else None
+    same_day = bool(cfg_row) and (cfg_row.get("day") or "").lower() == day_name.lower()
+    if same_day:
+        time_text, arrival, venue = cfg_row.get("session_time"), cfg_row.get("arrival_time"), cfg_row.get("venue")
+    else:
+        # the date belongs to another weekday than this lead's form -> use that weekday's settings
+        other = (db.query(FormConfig).filter(FormConfig.day == day_name, FormConfig.is_active == True,  # noqa: E712
+                                             FormConfig.session_time.isnot(None), FormConfig.session_time != "")
+                 .order_by(FormConfig.id.desc()).first())
+        dd = day_defaults().get(day_name) or {}
+        time_text = (other.session_time if other else None) or dd.get("session_time")
+        arrival = (other.arrival_time if other else None) or dd.get("arrival_time")
+        venue = (other.venue if other else None)
+        if not time_text and (lead.session_day or "").lower() == day_name.lower():
+            time_text, arrival, venue = lead.session_time, lead.arrival_time, lead.venue
+    time_text = time_text or ""
     start = parse_start_time(time_text)
     if start is None:
         return None, "no session time"
-    return datetime.combine(d, start, tzinfo=tz()), ""
+    return {
+        "start": datetime.combine(d, start, tzinfo=tz()),
+        "session_day": day_name,
+        "session_date": d.strftime("%A, %d %B %Y"),
+        "session_time": time_text,
+        "arrival_time": arrival or "",
+        "venue": venue or "",
+    }, ""
+
+
+def seminar_datetime(db: Session, lead: Lead) -> tuple[datetime | None, str]:
+    info, why = seminar_info(db, lead)
+    return (info["start"] if info else None), why
 
 
 def day_of(dt: datetime) -> str:
@@ -206,7 +234,8 @@ def confirmed_leads(db: Session):
 
 # ── sending ─────────────────────────────────────────────────────────────────
 
-def send_reminder(db: Session, lead: Lead, template: str, language: str, params: str) -> dict:
+def send_reminder(db: Session, lead: Lead, template: str, language: str, params: str,
+                  overrides: dict | None = None) -> dict:
     """Send a reminder template WITHOUT touching the lead's invite fields
     (whatsapp_sent / delivered / read keep describing the original invite)."""
     if not app_settings.whatsapp_enabled:
@@ -214,7 +243,7 @@ def send_reminder(db: Session, lead: Lead, template: str, language: str, params:
     if not app_settings.whatsapp_phone_number_id:
         return {"ok": False, "error": "WHATSAPP_PHONE_NUMBER_ID is not set", "retryable": False}
     try:
-        components = wa._build_components(db, lead, template, language or "en", params or "")
+        components = wa._build_components(db, lead, template, language or "en", params or "", overrides=overrides)
     except wa.TemplateConfigError as e:
         return {"ok": False, "error": str(e), "retryable": False}
     payload = {"messaging_product": "whatsapp", "to": clean_phone(lead.phone), "type": "template",
@@ -268,6 +297,15 @@ def _record(db: Session, row: ReminderLog, template: str, res: dict):
     db.commit()
 
 
+def message_overrides(db: Session, lead: Lead) -> dict:
+    """Seminar texts for the message, so a reminder always states the seminar the lead is
+    really attending (not what was copied onto the lead when it was created)."""
+    info, _ = seminar_info(db, lead)
+    if not info:
+        return {}
+    return {k: info[k] for k in ("session_day", "session_date", "session_time", "arrival_time", "venue") if info.get(k)}
+
+
 def run_due(db: Session | None = None, now: datetime | None = None) -> dict:
     """Send every reminder that is due right now. Safe to call as often as you like."""
     from .db import SessionLocal
@@ -299,7 +337,8 @@ def run_due(db: Session | None = None, now: datetime | None = None) -> dict:
                 if row is None:
                     continue
                 try:
-                    res = send_reminder(db, lead, rule["template"], rule["language"], rule["params"])
+                    res = send_reminder(db, lead, rule["template"], rule["language"], rule["params"],
+                                        overrides=message_overrides(db, lead))
                     _record(db, row, rule["template"], res)
                 except Exception as exc:                     # includes unique-key races
                     db.rollback()
