@@ -102,5 +102,6 @@ def test_send(data: TestIn, db: Session = Depends(get_db), user: str = Depends(r
     rule = reminders.load_settings()["rules"][data.kind]
     if not rule["template"]:
         raise HTTPException(400, "No template chosen for this reminder")
-    res = reminders.send_reminder(db, lead, rule["template"], rule["language"], rule["params"])
+    res = reminders.send_reminder(db, lead, rule["template"], rule["language"], rule["params"],
+                                  overrides=reminders.message_overrides(db, lead))
     return res
