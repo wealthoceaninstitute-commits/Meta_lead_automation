@@ -92,6 +92,69 @@ def save_settings(data: dict) -> dict:
     return cur
 
 
+# ── invites (manual "Send Invitation": template chosen by the seminar day) ──
+
+INVITE_KEY = "invite_settings"
+INVITE_DAYS = ("Friday", "Sunday")
+INVITE_DEFAULTS = {
+    "Friday": {"template": "", "language": "en", "params": "name,session_date"},
+    "Sunday": {"template": "sunday_seminar_invite", "language": "en", "params": "name,session_date"},
+}
+
+
+def load_invites() -> dict:
+    out = json.loads(json.dumps(INVITE_DEFAULTS))
+    try:
+        raw = json.loads(tokens.get_setting(INVITE_KEY, "") or "{}")
+    except Exception:
+        raw = {}
+    if isinstance(raw, dict):
+        for d in INVITE_DAYS:
+            r = raw.get(d)
+            if isinstance(r, dict):
+                for f in ("template", "language", "params"):
+                    if f in r:
+                        out[d][f] = str(r[f] or "").strip()
+    return out
+
+
+def save_invites(data: dict) -> dict:
+    cur = load_invites()
+    for d in INVITE_DAYS:
+        r = (data or {}).get(d)
+        if isinstance(r, dict):
+            for f in ("template", "language", "params"):
+                if f in r:
+                    cur[d][f] = str(r[f] or "").strip()
+    tokens.set_setting(INVITE_KEY, json.dumps(cur))
+    return cur
+
+
+def invite_plan(db: Session, lead: Lead) -> dict:
+    """Which invite goes to this lead: the template configured for the seminar day (follow-up
+    date first, then the lead's own date). {template, language, params, overrides, day, source}.
+    template is '' when no per-day invite is set -> caller falls back to the form's template."""
+    info = None
+    try:
+        info, _ = seminar_info(db, lead)
+    except Exception:
+        info = None
+    day = (info or {}).get("session_day") or ""
+    if not day:
+        d = parse_date(getattr(lead, "session_date", None))
+        if d is not None:
+            day = d.strftime("%A")
+    rule = load_invites().get(day.capitalize()) if day else None
+    overrides = {}
+    if info:
+        overrides = {k: info[k] for k in ("session_day", "session_date", "session_time", "arrival_time", "venue")
+                     if info.get(k)}
+    if rule and rule.get("template"):
+        return {"template": rule["template"], "language": rule.get("language") or "en",
+                "params": rule.get("params") or "", "overrides": overrides, "day": day, "source": "day"}
+    return {"template": "", "language": "en", "params": "", "overrides": overrides, "day": day, "source": "form"}
+
+
 # ── time helpers ────────────────────────────────────────────────────────────
 
 def tz():
