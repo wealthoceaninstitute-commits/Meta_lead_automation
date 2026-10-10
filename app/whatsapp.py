@@ -123,7 +123,7 @@ def _header_url(db: Session, template_name: str) -> str:
 
 
 def _build_components(db: Session, lead: "Lead", template_name: str, lang: str = "en",
-                      params_spec: str = "") -> list:
+                      params_spec: str = "", overrides: dict | None = None) -> list:
     """Header + body components the way the approved template wants them.
 
     * body values come from the form's "Template variables" (Form Config), in order;
@@ -133,6 +133,9 @@ def _build_components(db: Session, lead: "Lead", template_name: str, lang: str =
       rejects the message without it
     Raises TemplateConfigError (nothing is sent) when something required is missing."""
     vals = _values(lead)
+    for _k, _v in (overrides or {}).items():
+        if _v and _k in vals:
+            vals[_k] = _safe(_v)
     keys = [k for k in (_norm_key(x) for x in (params_spec or "").split(",")) if k in PARAM_KEYS]
     shape = _template_shape(_load_template(db, template_name, lang))
     comps: list = []
