@@ -311,17 +311,29 @@ def list_leads(
         query = query.filter(Lead.sync_status == sync)
     if unread:
         query = query.filter(Lead.unread_count > 0)
-    # Filter by lead created_time date range
-    if date_from:
+    # Date range on the "received" time (inclusive, whole days in the seminar timezone).
+    # Uses Meta's created_time (UTC text) when present, else the CRM created_at (manual leads).
+    if date_from or date_to:
+        from zoneinfo import ZoneInfo
+        from datetime import timezone as _tz
+        local = ZoneInfo(settings.seminar_timezone)
+        has_ct = and_(Lead.created_time.isnot(None), Lead.created_time != "")
+        no_ct = or_(Lead.created_time.is_(None), Lead.created_time == "")
         try:
-            query = query.filter(Lead.created_time >= date_from)
-        except Exception:
-            pass
-    if date_to:
-        try:
-            query = query.filter(Lead.created_time <= date_to + "T23:59:59")
-        except Exception:
-            pass
+            if date_from:
+                start = datetime.combine(date.fromisoformat(date_from), datetime.min.time(), tzinfo=local).astimezone(_tz.utc)
+                query = query.filter(or_(
+                    and_(has_ct, Lead.created_time >= start.strftime("%Y-%m-%dT%H:%M:%S+0000")),
+                    and_(no_ct, Lead.created_at >= start),
+                ))
+            if date_to:
+                end = datetime.combine(date.fromisoformat(date_to) + timedelta(days=1), datetime.min.time(), tzinfo=local).astimezone(_tz.utc)
+                query = query.filter(or_(
+                    and_(has_ct, Lead.created_time < end.strftime("%Y-%m-%dT%H:%M:%S+0000")),
+                    and_(no_ct, Lead.created_at < end),
+                ))
+        except ValueError:
+            raise HTTPException(400, "Dates must look like 2026-10-29")
     total = query.count()
     # Sort order
     if sort == "oldest":
