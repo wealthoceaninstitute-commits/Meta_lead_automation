@@ -113,6 +113,7 @@ class FollowUp(Base):
     followup_no      = Column(Integer, nullable=True)
     followup_date    = Column(String(80), nullable=True)
     response         = Column(Text, nullable=True)
+    lead_rating      = Column(String(40), nullable=True)   # Very good / Good / Average / Bad / Poor
     confirmed        = Column(String(40), nullable=True)
     session_date     = Column(String(80), nullable=True)
     next_followup_date = Column(String(80), nullable=True)
