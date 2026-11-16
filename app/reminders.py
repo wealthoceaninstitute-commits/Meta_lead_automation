@@ -95,11 +95,9 @@ def save_settings(data: dict) -> dict:
 # ── invites (manual "Send Invitation": template chosen by the seminar day) ──
 
 INVITE_KEY = "invite_settings"
-INVITE_DAYS = ("Friday", "Sunday")
-INVITE_DEFAULTS = {
-    "Friday": {"template": "", "language": "en", "params": "name,session_date"},
-    "Sunday": {"template": "sunday_seminar_invite", "language": "en", "params": "name,session_date"},
-}
+INVITE_DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+INVITE_DEFAULTS = {d: {"template": "", "language": "en", "params": "name,session_date"} for d in INVITE_DAYS}
+INVITE_DEFAULTS["Sunday"]["template"] = "sunday_seminar_invite"
 
 
 def load_invites() -> dict:
