@@ -251,13 +251,26 @@ def resolve_session_details(form_id: str, db: Session) -> dict:
     return resolve_session(db, form_id)
 
 
-def manual_session(day: str) -> dict:
-    """Session details for a lead added by hand in the CRM."""
-    d = day_defaults().get(day) or day_defaults()["Sunday"]
-    day = day if day in day_defaults() else "Sunday"
+def manual_session(day: str, db: Optional[Session] = None) -> dict:
+    """Session details for a lead added by hand in the CRM. Any weekday is allowed: the time,
+    arrival time and venue come from the newest active Form Config of that day, then from the
+    built-in Friday/Sunday defaults; a day with neither keeps the day/date and leaves times blank."""
+    day = (day or "").strip().capitalize()
+    if day.lower() not in WEEKDAYS:
+        day = "Sunday"
+    d = dict(day_defaults().get(day) or {"session_time": "", "arrival_time": ""})
+    venue = settings.seminar_venue
+    if db is not None:
+        row = (db.query(FormConfig)
+               .filter(FormConfig.day == day, FormConfig.is_active == True,  # noqa: E712
+                       FormConfig.session_time.isnot(None), FormConfig.session_time != "")
+               .order_by(FormConfig.id.desc()).first())
+        if row:
+            d = {"session_time": row.session_time, "arrival_time": row.arrival_time or d["arrival_time"]}
+            venue = row.venue or venue
     return {
         "session_day": day,
         "session_date": next_session_date(day, d["session_time"]),
         "session_time": d["session_time"], "arrival_time": d["arrival_time"],
-        "venue": settings.seminar_venue,
+        "venue": venue,
     }
