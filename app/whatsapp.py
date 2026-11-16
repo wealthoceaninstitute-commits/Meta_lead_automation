@@ -66,7 +66,8 @@ _KEY_ALIASES = {
 
 
 def _norm_key(k: str) -> str:
-    k = (k or "").strip().lower()
+    # tolerate "{{customer_name}}" / "{ name }" typed with the template's curly brackets
+    k = (k or "").strip().strip("{}").strip().lower()
     return _KEY_ALIASES.get(k, k)
 
 
