@@ -338,6 +338,18 @@ def test_session_days_and_lead_rating(env, dbs, client):
     assert days == sorted(days, key=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].index)
     assert client.get("/leads?day=Monday").json()["total"] == 1
 
+    # a manual lead can pick any weekday; its time/venue come from that day's Form Config
+    row = dbs.query(FormConfig).filter(FormConfig.form_id == "mon-form-1").first()
+    row.session_time, row.arrival_time, row.venue = "05:00 PM to 7:00 PM", "4:45 PM", "Kuvempunagara"
+    dbs.commit()
+    m = client.post("/leads", json={"full_name": "Mon Manual", "phone": "9000000002", "preferred_day": "Monday"}).json()
+    assert m["session_day"] == "Monday" and m["session_date"].startswith("Monday")
+    assert m["session_time"] == "05:00 PM to 7:00 PM" and m["venue"] == "Kuvempunagara"
+    t = client.post("/leads", json={"full_name": "Tue Manual", "phone": "9000000003", "preferred_day": "Tuesday"}).json()
+    assert t["session_day"] == "Tuesday" and t["session_date"].startswith("Tuesday")
+    inv = client.put("/reminders/invites", json={"Monday": {"template": "investment_master_class"}})
+    assert inv.status_code == 200 and inv.json()["invites"]["Monday"]["template"] == "investment_master_class"
+
     r = client.post(f"/leads/{lid}/followups", json={"response": "Interested", "lead_rating": "Very good"})
     assert r.status_code == 200
     rows = client.get(f"/leads/{lid}/followups").json()["rows"]
