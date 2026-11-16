@@ -320,3 +320,28 @@ def test_form_cleanup_and_find_new(env, dbs, client):
     assert r["removed"] >= 1
     assert dbs.query(FormConfig).filter(FormConfig.form_id == "OLD123").count() == 0
     assert dbs.query(FormConfig).filter(FormConfig.form_id == "2216617835805846").count() == 1
+
+
+# ── day filter options come from Form Config; follow-ups carry a lead rating ──
+def test_session_days_and_lead_rating(env, dbs, client):
+    from app.models import FormConfig, Lead
+    dbs.add(FormConfig(form_id="mon-form-1", form_name="Monday class", campaign_name="Monday class",
+                       day="Monday", is_active=True))
+    dbs.add(FormConfig(form_id="auto-form-1", form_name="Unknown", campaign_name="Unknown",
+                       day="Auto", is_active=True))
+    lead = Lead(full_name="Rating Test", phone="919000000001", session_day="Monday")
+    dbs.add(lead); dbs.commit()
+    lid = lead.id
+
+    days = client.get("/session-days").json()["days"]
+    assert "Monday" in days and "Auto" not in days
+    assert days == sorted(days, key=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].index)
+    assert client.get("/leads?day=Monday").json()["total"] == 1
+
+    r = client.post(f"/leads/{lid}/followups", json={"response": "Interested", "lead_rating": "Very good"})
+    assert r.status_code == 200
+    rows = client.get(f"/leads/{lid}/followups").json()["rows"]
+    assert rows[-1]["lead_rating"] == "Very good"
+    fid = rows[-1]["id"]
+    assert client.patch(f"/leads/{lid}/followups/{fid}", json={"response": "Interested", "lead_rating": "Poor"}).status_code == 200
+    assert client.get(f"/leads/{lid}/followups").json()["rows"][-1]["lead_rating"] == "Poor"
