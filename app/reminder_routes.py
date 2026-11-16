@@ -27,7 +27,12 @@ class SettingsIn(BaseModel):
 
 
 class InvitesIn(BaseModel):
+    Monday: RuleIn | None = None
+    Tuesday: RuleIn | None = None
+    Wednesday: RuleIn | None = None
+    Thursday: RuleIn | None = None
     Friday: RuleIn | None = None
+    Saturday: RuleIn | None = None
     Sunday: RuleIn | None = None
 
 
