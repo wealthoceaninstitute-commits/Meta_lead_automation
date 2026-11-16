@@ -276,6 +276,24 @@ def login(data: LoginIn):
 # Leads
 # ---------------------------------------------------------------------------
 
+_WEEK_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+@app.get("/session-days")
+def list_session_days(db: Session = Depends(get_db), user: str = Depends(require_user)):
+    """Days offered in the Leads day filter: every day set on an active Form Config,
+    plus any day existing leads already carry (so older leads stay filterable)."""
+    from .models import FormConfig
+    found = set()
+    for (d,) in db.query(FormConfig.day).filter(FormConfig.is_active.is_(True)).distinct():
+        found.add((d or "").strip())
+    for (d,) in db.query(Lead.session_day).filter(Lead.session_day.isnot(None)).distinct():
+        found.add((d or "").strip())
+    found = {d for d in found if d and d.lower() != "auto"}
+    order = {d: i for i, d in enumerate(_WEEK_ORDER)}
+    return {"days": sorted(found, key=lambda d: (order.get(d, 99), d))}
+
+
 @app.get("/leads")
 def list_leads(
     q: str = "",
@@ -449,6 +467,7 @@ def get_followups(lead_id: int, db: Session = Depends(get_db), user: str = Depen
         {
             "id": r.id, "lead_id": r.lead_id, "followup_no": r.followup_no,
             "followup_date": r.followup_date, "response": r.response,
+            "lead_rating": r.lead_rating or "",
             "confirmed": r.confirmed, "session_date": r.session_date, "seminar_date": r.session_date,
             "next_followup_date": r.next_followup_date, "remarks": r.remarks,
             "created_at": str(r.created_at),
@@ -651,6 +670,7 @@ def list_due_followups(
                 "followup_no": latest.followup_no if latest else None,
                 "followup_date": latest.followup_date if latest else "",
                 "response": latest.response if latest else "",
+                "lead_rating": (latest.lead_rating or "") if latest else "",
                 "confirmed": latest.confirmed if latest else "",
                 "seminar_date": latest.session_date if latest else "",
                 "session_date": latest.session_date if latest else "",
