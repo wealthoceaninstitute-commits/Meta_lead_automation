@@ -80,6 +80,7 @@ class LeadUpdate(BaseModel):
 class FollowUpIn(BaseModel):
     followup_date:      str = ""
     response:           str = ""
+    lead_rating:        str = ""   # how the lead responded: Very good / Good / Average / Bad / Poor
     confirmed:          str = ""
     session_date:       str = ""
     next_followup_date: str = ""
