@@ -22,11 +22,11 @@ def first_nonempty(*vals):
     return ""
 
 
-def get_seminar_details(preferred_day: str = "", data: dict | None = None):
+def get_seminar_details(preferred_day: str = "", data: dict | None = None, db=None):
     """Session details for a manually added lead (kept for old call-sites)."""
     from .form_config import manual_session, infer_day
     day = infer_day(preferred_day) or "Sunday"
-    s = manual_session(day)
+    s = manual_session(day, db)
     return {
         "session_day": s["session_day"], "session_date": s["session_date"],
         "session_time": s["session_time"], "arrival_time": s["arrival_time"], "venue": s["venue"],
