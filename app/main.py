@@ -402,7 +402,7 @@ def create_lead(data: LeadCreate, db: Session = Depends(get_db), user: str = Dep
     payload["platform"] = payload.get("platform") or "FB"
     payload["campaign_name"] = payload.get("campaign_name") or "Manual"
 
-    seminar = get_seminar_details(data.preferred_day, payload)
+    seminar = get_seminar_details(data.preferred_day, payload, db)
     lead = Lead(
         **payload,
         raw={"source": "manual", "platform": payload.get("platform")},
@@ -1069,7 +1069,7 @@ def _require_test_mode():
 @app.post("/test/whatsapp")
 def test_whatsapp(data: TestWhatsAppIn, db: Session = Depends(get_db)):
     _require_test_mode()
-    seminar = get_seminar_details(data.day)
+    seminar = get_seminar_details(data.day, db=db)
     lead = Lead(
         full_name=data.name, phone=clean_phone(data.phone), campaign_name="Test",
         preferred_day=seminar["session_day"], sync_status="ok",
