@@ -191,6 +191,8 @@ def merge_whatsapp_placeholders(db: Session) -> int:
         try:
             db.query(WhatsAppMessage).filter(WhatsAppMessage.lead_id == ph.id).update({"lead_id": real.id})
             db.query(FollowUp).filter(FollowUp.lead_id == ph.id).update({"lead_id": real.id})
+            from .models import WebsiteEvent
+            db.query(WebsiteEvent).filter(WebsiteEvent.lead_id == ph.id).update({"lead_id": real.id})
             if ph.latest_reply_text and (not real.latest_reply_at or (ph.latest_reply_at or "") >= real.latest_reply_at):
                 real.latest_reply_text, real.latest_reply_at = ph.latest_reply_text, ph.latest_reply_at
             real.unread_count = (real.unread_count or 0) + (ph.unread_count or 0)
@@ -218,7 +220,7 @@ def upsert_lead_from_meta(db: Session, lead_id: str, raw: dict | None = None,
     lead = db.query(Lead).filter(Lead.meta_lead_id == lead_id).first()
     created = lead is None
     if created:
-        lead = Lead(meta_lead_id=lead_id, status="New", sync_status="pending_fetch")
+        lead = Lead(meta_lead_id=lead_id, status="New", sync_status="pending_fetch", source="meta")
         ct = wv.get("created_time")
         if isinstance(ct, (int, float)):
             ct = datetime.fromtimestamp(ct, tz=timezone.utc).isoformat()
@@ -441,11 +443,19 @@ def handle_whatsapp_payload(db: Session, payload: dict):
                         WhatsAppMessage.wa_message_id == m.get("id")).first():
                     continue                         # duplicate delivery
                 lead = db.query(Lead).filter(Lead.phone == phone).order_by(Lead.id.desc()).first()
+                created = lead is None
                 if not lead:
-                    lead = Lead(phone=phone, full_name=name or None, status="WhatsApp", sync_status="ok")
+                    lead = Lead(phone=phone, full_name=name or None, status="WhatsApp", sync_status="ok",
+                                source="whatsapp")
                     db.add(lead)
                     db.commit()
                     db.refresh(lead)
+                try:   # a ticket typed by the website ("#FreeClass · …") → website lead + report
+                    from .website import on_incoming_whatsapp
+                    on_incoming_whatsapp(db, lead, text or "", created)
+                except Exception as exc:
+                    db.rollback()
+                    print(f"[website] ticket parse failed: {exc}", flush=True)
                 lead.latest_reply_text = text
                 lead.latest_reply_at = now_iso()
                 lead.unread_count = (lead.unread_count or 0) + 1
