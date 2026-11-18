@@ -285,6 +285,7 @@ def build_health(db: Session) -> dict:
 
     no_tpl = db.query(func.count(FormConfig.id)).filter(
         FormConfig.is_active == True,  # noqa: E712
+        FormConfig.form_id != "website-enquiry",   # website enquiry acknowledgement is optional
         or_(FormConfig.wa_template.is_(None), FormConfig.wa_template == "")).scalar() or 0
     if no_tpl and settings.whatsapp_enabled:
         issue("warn", f"{no_tpl} active form(s) have no WhatsApp template",
