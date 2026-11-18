@@ -20,6 +20,7 @@ from .template_routes import router as template_router
 from .system_routes import router as system_router
 from .purge_routes import router as purge_router
 from .reminder_routes import router as reminder_router
+from .website import router as website_router
 from .whatsapp_status import apply_status_updates
 from .db import SessionLocal
 from . import tokens
@@ -31,6 +32,7 @@ app.include_router(form_config_router)
 app.include_router(system_router)
 app.include_router(purge_router)
 app.include_router(reminder_router)
+app.include_router(website_router)
 
 KEEP_ALIVE_TASK = None
 
@@ -127,6 +129,8 @@ async def _startup():
         from .form_config import seed_default_configs
         with SessionLocal() as db:
             seed_default_configs(db)
+            from .website import seed_website_configs
+            seed_website_configs(db)
     except Exception as exc:
         print(f"[startup] seed failed: {exc}", flush=True)
     if settings.admin_password == "admin123" or settings.jwt_secret == "dev-secret-change-me":
@@ -300,6 +304,7 @@ def list_leads(
     status: str = "",
     day: str = "",
     sync: str = "",
+    source: str = "",
     date_from: str = "",
     date_to: str = "",
     sort: str = "latest",
@@ -327,6 +332,19 @@ def list_leads(
         query = query.filter(Lead.session_day == day)
     if sync:
         query = query.filter(Lead.sync_status == sync)
+    if source:
+        # old rows have no source yet: Meta leads carry a meta_lead_id, WhatsApp-only rows the "WhatsApp" status
+        legacy = Lead.source.is_(None)
+        cond = {
+            "meta":     or_(Lead.source == "meta", and_(legacy, Lead.meta_lead_id.isnot(None))),
+            "website":  Lead.source == "website",
+            "whatsapp": or_(Lead.source == "whatsapp", and_(legacy, Lead.meta_lead_id.is_(None), Lead.status == "WhatsApp")),
+            "manual":   or_(Lead.source == "manual", and_(legacy, Lead.meta_lead_id.is_(None),
+                                                         or_(Lead.status.is_(None), Lead.status != "WhatsApp"))),
+        }.get(source.lower())
+        if cond is None:
+            raise HTTPException(400, "source must be meta, website, whatsapp or manual")
+        query = query.filter(cond)
     if unread:
         query = query.filter(Lead.unread_count > 0)
     # Date range on the "received" time (inclusive, whole days in the seminar timezone).
@@ -405,6 +423,7 @@ def create_lead(data: LeadCreate, db: Session = Depends(get_db), user: str = Dep
     seminar = get_seminar_details(data.preferred_day, payload, db)
     lead = Lead(
         **payload,
+        source="manual",
         raw={"source": "manual", "platform": payload.get("platform")},
         sync_status="ok",
         **seminar,
