@@ -225,6 +225,12 @@ def run_cycle(force_check: bool = False) -> dict:
                 summary["pull"] = pull_recent_leads(db)
             summary["retry"] = retry_pending(db, meta_ok=meta_ok, wa_ok=wa_ok)
             try:
+                from .website import purge_old_events
+                summary["website_events_purged"] = purge_old_events(db)
+            except Exception as exc:
+                db.rollback()
+                print(f"[sync] website purge error: {exc}", flush=True)
+            try:
                 summary["merged_duplicates"] = merge_whatsapp_placeholders(db)
             except Exception as exc:
                 db.rollback()
