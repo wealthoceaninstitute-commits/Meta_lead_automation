@@ -18,6 +18,8 @@ class LeadOut(BaseModel):
     ad_id:           Optional[str] = None
     form_id:         Optional[str] = None
     platform:        Optional[str] = None
+    source:          Optional[str] = None
+    web_stage:       Optional[str] = None
     # Session details (was seminar_*)
     session_day:     Optional[str] = None
     session_date:    Optional[str] = None
