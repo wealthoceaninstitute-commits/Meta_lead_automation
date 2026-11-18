@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     retry_max_age_hours:      int  = Field(default=48,   alias="RETRY_MAX_AGE_HOURS")
     warn_token_days:          int  = Field(default=10,   alias="WARN_TOKEN_DAYS")
 
+    # ── Public website (wealthoceaninstitute.co.in) ───────────────────────
+    # Shared secret the website server sends in the X-Website-Key header. Empty = website ingest off.
+    website_ingest_key:      str = Field(default="", alias="WEBSITE_INGEST_KEY")
+    # Website analytics events older than this are deleted by the sync loop (leads are never deleted).
+    website_events_keep_days: int = Field(default=400, alias="WEBSITE_EVENTS_KEEP_DAYS")
+
     # ── Alerts (all optional) ───────────────────────────────────────────────
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id:   str = Field(default="", alias="TELEGRAM_CHAT_ID")
