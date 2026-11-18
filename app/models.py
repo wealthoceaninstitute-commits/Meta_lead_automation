@@ -73,6 +73,13 @@ class Lead(Base):
     sync_error     = Column(Text, nullable=True)
     fetch_attempts = Column(Integer, default=0)
 
+    # Where the lead came from: meta | website | whatsapp | manual  (NULL on old rows = meta)
+    source         = Column(String(40), index=True, nullable=True)
+    # Website form progress: incomplete | whatsapp | callback | whatsapp_direct
+    web_stage      = Column(String(40), nullable=True)
+    web_ref        = Column(String(64), index=True, nullable=True)   # id of the website form session
+    web_visitor_id = Column(String(64), index=True, nullable=True)   # anonymous browser id
+
     # CRM fields
     status         = Column(String(80), default="New")
     owner          = Column(String(120), nullable=True)
@@ -218,3 +225,34 @@ class ReminderLog(Base):
     error        = Column(Text, nullable=True)
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
     updated_at   = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class WebsiteEvent(Base):
+    """Everything the public website reports: page and section views, WhatsApp / call / map /
+    share clicks, the expert form (opened, each step, sent) and website tickets that arrived
+    on WhatsApp. Replaces the old Google Sheet. `lead_id` links a visitor's journey to their lead."""
+    __tablename__ = "website_events"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    type         = Column(String(40), index=True, nullable=False)
+    visitor_id   = Column(String(64), index=True, nullable=True)
+    session_id   = Column(String(64), index=True, nullable=True)
+    lead_id      = Column(Integer, ForeignKey("leads.id", ondelete="SET NULL"), index=True, nullable=True)
+    event_time   = Column(String(40), nullable=True)      # browser time (ISO)
+    tag          = Column(String(40), nullable=True)      # FreeClass / Investment / Premium10L / Course / MoneyCheck / General
+    topic        = Column(String(255), nullable=True)
+    section      = Column(String(80), nullable=True)
+    button       = Column(String(120), nullable=True)
+    page         = Column(String(255), nullable=True)
+    device       = Column(String(20), nullable=True)
+    utm_source   = Column(String(120), nullable=True)
+    utm_medium   = Column(String(120), nullable=True)
+    utm_campaign = Column(String(255), nullable=True)
+    utm_content  = Column(String(255), nullable=True)
+    referrer     = Column(String(500), nullable=True)
+    landed       = Column(String(40), nullable=True)
+    raw          = Column(JSON, nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+Index("idx_web_events_type_created", WebsiteEvent.type, WebsiteEvent.created_at)
