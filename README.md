@@ -55,3 +55,20 @@ Reports, the "Day" filter, follow-up history, *Add Lead* and the test endpoints 
 
 ## Neon note
 The self-heal loop touches the database once per run (default every 20 min), which lets Neon sleep in between. Raise `SYNC_INTERVAL_MINUTES` if you ever hit compute limits; webhooks still arrive instantly.
+
+## Website leads and analytics (wealthoceaninstitute.co.in)
+The website no longer writes to Google Sheets. Every event goes to `POST /public/website/events`
+(server to server, header `X-Website-Key`), see `app/website.py`.
+
+* **Set on Railway:** `WEBSITE_INGEST_KEY` = a long random string (the website uses the same value
+  as `CRM_WEBSITE_KEY`). Optional `WEBSITE_EVENTS_KEEP_DAYS` (default 400) for analytics retention.
+* **Leads:** the "Talk to an expert" form, the contact page and the mutual-fund course checkout become
+  leads with source **Website**. Half-filled forms (name + number, Send not pressed) are saved with
+  sync state `web_incomplete` and are never messaged automatically. A number already in the CRM gets
+  a follow-up note instead of a duplicate lead.
+* **WhatsApp template:** set it in **Form Config** on `website-freeclass-monday / -friday / -sunday`
+  (seat confirmation, same variables as the seminar invites). `website-enquiry` is optional.
+* **WhatsApp tickets:** a message that starts with the website ticket ("#FreeClass · …", "sent from
+  the website") from a new number becomes a website lead and counts in the report.
+* **CRM:** the **Website** tab (`GET /reports/website`) and each lead's journey (`GET /website/journey/{id}`);
+  the Leads list takes `?source=meta|website|whatsapp|manual`.
