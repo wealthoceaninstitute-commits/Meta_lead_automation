@@ -9,6 +9,7 @@ Event types the website sends
   page_view, section_view                         – visits, traffic sources, how far people scroll
   whatsapp_click {tag, topic}                     – a WhatsApp ticket button (#FreeClass, #Investment…)
   call_click, map_click, share_click
+  course_open {topic=course slug}                 – "See the full course" opened on the home page
   expert_open {topic}, form_step {topic=step id}  – the "Talk to an expert" form
   expert_form {lead_id, stage, name, phone, …}    – the form itself  → becomes / updates a LEAD
       (also used by the contact page, stage "submitted", and the mutual-fund course page,
@@ -52,7 +53,7 @@ router = APIRouter(tags=["Website"])
 
 EVENT_TYPES = {
     "page_view", "section_view", "whatsapp_click", "call_click", "map_click", "share_click",
-    "expert_open", "form_step", "expert_form", "whatsapp_message",
+    "expert_open", "form_step", "expert_form", "whatsapp_message", "course_open",
 }
 MAX_EVENTS_PER_CALL = 50
 
@@ -598,6 +599,8 @@ def website_report(date_from: str = "", date_to: str = "", db: Session = Depends
         "whatsapp_by_tag": dict(Counter(e.tag or "General" for e in wa).most_common()),
         "whatsapp_by_section": dict(Counter(e.section or "?" for e in wa).most_common()),
         "whatsapp_messages_by_tag": dict(Counter(e.tag or "General" for e in wa_msgs).most_common()),
+        "course_opens": dict(Counter(e.topic or "?" for e in rows if e.type == "course_open").most_common()),
+        "course_whatsapp": dict(Counter((e.topic or "?").split(" · ")[0] for e in wa if e.tag == "Course").most_common()),
         "sources": dict(sources.most_common(12)),
         "campaigns": dict(campaigns.most_common(12)),
         "devices": dict(devices.most_common()),
