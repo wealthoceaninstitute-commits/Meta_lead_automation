@@ -21,6 +21,7 @@ from .system_routes import router as system_router
 from .purge_routes import router as purge_router
 from .reminder_routes import router as reminder_router
 from .website import router as website_router
+from .feedback_routes import router as feedback_router, seed_feedback_fields
 from .whatsapp_status import apply_status_updates
 from .db import SessionLocal
 from . import tokens
@@ -33,6 +34,7 @@ app.include_router(system_router)
 app.include_router(purge_router)
 app.include_router(reminder_router)
 app.include_router(website_router)
+app.include_router(feedback_router)
 
 KEEP_ALIVE_TASK = None
 
@@ -131,6 +133,7 @@ async def _startup():
             seed_default_configs(db)
             from .website import seed_website_configs
             seed_website_configs(db)
+            seed_feedback_fields(db)
     except Exception as exc:
         print(f"[startup] seed failed: {exc}", flush=True)
     if settings.admin_password == "admin123" or settings.jwt_secret == "dev-secret-change-me":
