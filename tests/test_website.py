@@ -171,6 +171,8 @@ def test_website_report_and_journey(web, client, dbs):
         {"type": "page_view", **{**VIS, "visitor_id": "v2", "session_id": "s2", "utm_source": "",
                                  "referrer": "https://www.google.com/", "device": "desktop"}},
         {"type": "expert_open", "topic": "", "section": "Top of page", **VIS},
+        {"type": "course_open", "topic": "panchajanya", "section": "Courses", **VIS},
+        {"type": "whatsapp_click", "tag": "Course", "topic": "Panchajanya · fee and next batch", "section": "Courses", **VIS},
         {"type": "form_step", "topic": "kind", **VIS},
         {"type": "form_step", "topic": "you", **VIS},
         form("Filled form, did not press Send", lid="r1"),
@@ -180,10 +182,11 @@ def test_website_report_and_journey(web, client, dbs):
     assert r.status_code == 200
     d = r.json()
     t = d["totals"]
-    assert t["visitors"] == 2 and t["page_views"] == 2 and t["whatsapp_clicks"] == 1 and t["form_opens"] == 1
+    assert t["visitors"] == 2 and t["page_views"] == 2 and t["whatsapp_clicks"] == 2 and t["form_opens"] == 1
+    assert d["course_opens"] == {"panchajanya": 1} and d["course_whatsapp"] == {"Panchajanya": 1}
     assert t["new_leads"] == 2 and t["forms_submitted"] == 1 and t["forms_incomplete"] == 1
     assert d["sources"] == {"Facebook": 1, "Google": 1}
-    assert d["whatsapp_by_tag"] == {"FreeClass": 1}
+    assert d["whatsapp_by_tag"] == {"FreeClass": 1, "Course": 1}
     assert d["form_funnel"]["steps"][0]["reached"] == 1
     assert sum(x["leads"] for x in d["by_day"]) == 2
     lead = dbs.query(Lead).filter_by(web_ref="r1").one()
